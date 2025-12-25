@@ -432,6 +432,9 @@ const Experience = ({ sceneState, rotationSpeed, customPhotos }: { sceneState: '
 const GestureController = ({ onGesture, onMove, onStatus, debugMode }: any) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // 用于平滑手部位置的历史记录
+  const handPositionHistory = useRef<number[]>([]);
+  const smoothedSpeed = useRef(0);
 
   useEffect(() => {
     let gestureRecognizer: GestureRecognizer;
@@ -484,14 +487,52 @@ const GestureController = ({ onGesture, onMove, onStatus, debugMode }: any) => {
             if (results.gestures.length > 0) {
               const name = results.gestures[0][0].categoryName; const score = results.gestures[0][0].score;
               if (score > 0.4) {
-                 if (name === "Open_Palm") onGesture("CHAOS"); if (name === "Closed_Fist") onGesture("FORMED");
+                 if (name === "Open_Palm") onGesture("CHAOS"); 
+                 if (name === "Closed_Fist") onGesture("FORMED");
                  if (debugMode) onStatus(`DETECTED: ${name}`);
               }
+              
+              // 优化：使用手腕位置（landmark 0）计算旋转
               if (results.landmarks.length > 0) {
-                const speed = (0.5 - results.landmarks[0][0].x) * 0.15;
-                onMove(Math.abs(speed) > 0.01 ? speed : 0);
+                const handX = results.landmarks[0][0].x; // 手腕 x 坐标 (0-1)
+                
+                // 添加到历史记录用于平滑
+                handPositionHistory.current.push(handX);
+                if (handPositionHistory.current.length > 5) {
+                  handPositionHistory.current.shift();
+                }
+                
+                // 计算平均位置
+                const avgX = handPositionHistory.current.reduce((a, b) => a + b, 0) / handPositionHistory.current.length;
+                
+                // 计算速度：中心点为 0.5，偏离越多速度越快
+                // 增大灵敏度系数从 0.15 到 0.4，降低死区从 0.01 到 0.005
+                const rawSpeed = (0.5 - avgX) * 0.4;
+                
+                // 平滑过渡
+                smoothedSpeed.current = smoothedSpeed.current * 0.7 + rawSpeed * 0.3;
+                
+                // 更小的死区，让转动更灵敏
+                const deadzone = 0.005;
+                const finalSpeed = Math.abs(smoothedSpeed.current) > deadzone ? smoothedSpeed.current : 0;
+                
+                onMove(finalSpeed);
+                
+                if (debugMode) {
+                  const direction = finalSpeed > 0.01 ? "← 左转" : finalSpeed < -0.01 ? "右转 →" : "静止";
+                  onStatus(`${name} | ${direction} | 速度: ${finalSpeed.toFixed(3)}`);
+                }
               }
-            } else { onMove(0); if (debugMode) onStatus("AI READY: NO HAND"); }
+            } else { 
+              // 没有检测到手时，平滑减速到 0
+              smoothedSpeed.current *= 0.9;
+              if (Math.abs(smoothedSpeed.current) < 0.001) {
+                smoothedSpeed.current = 0;
+              }
+              onMove(smoothedSpeed.current);
+              handPositionHistory.current = [];
+              if (debugMode) onStatus("AI READY: NO HAND"); 
+            }
         }
         requestRef = requestAnimationFrame(predictWebcam);
       }
