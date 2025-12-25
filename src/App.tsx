@@ -39,19 +39,211 @@ const CONFIG = {
     borders: ['#FFFAF0', '#F0E68C', '#E6E6FA', '#FFB6C1', '#98FB98', '#87CEFA', '#FFDAB9'],
     // 圣诞元素颜色
     giftColors: ['#D32F2F', '#FFD700', '#1976D2', '#2E7D32'],
-    candyColors: ['#FF0000', '#FFFFFF']
+    candyColors: ['#FF0000', '#FFFFFF'],
+    // 烟花颜色
+    fireworkColors: ['#FF0000', '#FFD700', '#00FF00', '#FF69B4', '#00BFFF', '#FF4500', '#9400D3']
   },
   counts: {
     foliage: 15000,
     ornaments: 300,   // 拍立得照片数量
     elements: 200,    // 圣诞元素数量
-    lights: 400       // 彩灯数量
+    lights: 400,      // 彩灯数量
+    snowflakes: 1000, // 雪花数量
+    fireworkParticles: 100 // 每个烟花的粒子数
   },
   tree: { height: 22, radius: 9 }, // 树体尺寸
   photos: {
     // top 属性不再需要，因为已经移入 body
     body: bodyPhotoPaths
   }
+};
+
+// --- Component: Snowfall Effect (雪花特效) ---
+const Snowfall = ({ active }: { active: boolean }) => {
+  const snowRef = useRef<THREE.Points>(null);
+  
+  const { positions, velocities } = useMemo(() => {
+    const count = CONFIG.counts.snowflakes;
+    const positions = new Float32Array(count * 3);
+    const velocities = new Float32Array(count);
+    
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = (Math.random() - 0.5) * 100;     // x
+      positions[i * 3 + 1] = Math.random() * 60 + 20;     // y (从上方开始)
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 100; // z
+      velocities[i] = 0.5 + Math.random() * 1.5;          // 下落速度
+    }
+    return { positions, velocities };
+  }, []);
+
+  useFrame((_, delta) => {
+    if (!snowRef.current || !active) return;
+    const posArray = snowRef.current.geometry.attributes.position.array as Float32Array;
+    
+    for (let i = 0; i < CONFIG.counts.snowflakes; i++) {
+      // 下落
+      posArray[i * 3 + 1] -= velocities[i] * delta * 10;
+      // 轻微左右飘动
+      posArray[i * 3] += Math.sin(Date.now() * 0.001 + i) * delta * 0.5;
+      
+      // 重置到顶部
+      if (posArray[i * 3 + 1] < -30) {
+        posArray[i * 3 + 1] = 40 + Math.random() * 20;
+        posArray[i * 3] = (Math.random() - 0.5) * 100;
+        posArray[i * 3 + 2] = (Math.random() - 0.5) * 100;
+      }
+    }
+    snowRef.current.geometry.attributes.position.needsUpdate = true;
+  });
+
+  if (!active) return null;
+
+  return (
+    <points ref={snowRef}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+      </bufferGeometry>
+      <pointsMaterial
+        size={0.3}
+        color="#FFFFFF"
+        transparent
+        opacity={0.8}
+        sizeAttenuation
+        depthWrite={false}
+      />
+    </points>
+  );
+};
+
+// --- Component: Firework (单个烟花) ---
+const Firework = ({ position, color, onComplete }: { position: THREE.Vector3, color: string, onComplete: () => void }) => {
+  const particlesRef = useRef<THREE.Points>(null);
+  const startTime = useRef(Date.now());
+  const duration = 2000; // 烟花持续2秒
+
+  const { positions, velocities } = useMemo(() => {
+    const count = CONFIG.counts.fireworkParticles;
+    const positions = new Float32Array(count * 3);
+    const velocities = new Float32Array(count * 3);
+    
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = position.x;
+      positions[i * 3 + 1] = position.y;
+      positions[i * 3 + 2] = position.z;
+      
+      // 随机方向爆炸
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI;
+      const speed = 5 + Math.random() * 10;
+      velocities[i * 3] = Math.sin(phi) * Math.cos(theta) * speed;
+      velocities[i * 3 + 1] = Math.cos(phi) * speed;
+      velocities[i * 3 + 2] = Math.sin(phi) * Math.sin(theta) * speed;
+    }
+    return { positions, velocities };
+  }, [position]);
+
+  useFrame((_, delta) => {
+    if (!particlesRef.current) return;
+    
+    const elapsed = Date.now() - startTime.current;
+    if (elapsed > duration) {
+      onComplete();
+      return;
+    }
+
+    const posArray = particlesRef.current.geometry.attributes.position.array as Float32Array;
+    const progress = elapsed / duration;
+    
+    for (let i = 0; i < CONFIG.counts.fireworkParticles; i++) {
+      posArray[i * 3] += velocities[i * 3] * delta;
+      posArray[i * 3 + 1] += velocities[i * 3 + 1] * delta - delta * 5 * progress; // 重力
+      posArray[i * 3 + 2] += velocities[i * 3 + 2] * delta;
+    }
+    particlesRef.current.geometry.attributes.position.needsUpdate = true;
+    
+    // 淡出效果
+    const material = particlesRef.current.material as THREE.PointsMaterial;
+    material.opacity = 1 - progress;
+  });
+
+  return (
+    <points ref={particlesRef}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} />
+      </bufferGeometry>
+      <pointsMaterial
+        size={0.4}
+        color={color}
+        transparent
+        opacity={1}
+        sizeAttenuation
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+      />
+    </points>
+  );
+};
+
+// --- Component: Fireworks Manager (烟花管理器) ---
+const FireworksManager = ({ active }: { active: boolean }) => {
+  const [fireworks, setFireworks] = useState<Array<{ id: number, position: THREE.Vector3, color: string }>>([]);
+  const nextId = useRef(0);
+
+  useEffect(() => {
+    if (!active) {
+      setFireworks([]);
+      return;
+    }
+
+    // 立即发射几个烟花
+    const launchInitialFireworks = () => {
+      for (let i = 0; i < 5; i++) {
+        setTimeout(() => {
+          const position = new THREE.Vector3(
+            (Math.random() - 0.5) * 40,
+            Math.random() * 20 + 10,
+            (Math.random() - 0.5) * 40
+          );
+          const color = CONFIG.colors.fireworkColors[Math.floor(Math.random() * CONFIG.colors.fireworkColors.length)];
+          setFireworks(prev => [...prev, { id: nextId.current++, position, color }]);
+        }, i * 200);
+      }
+    };
+
+    launchInitialFireworks();
+
+    // 持续发射烟花
+    const interval = setInterval(() => {
+      if (Math.random() > 0.3) {
+        const position = new THREE.Vector3(
+          (Math.random() - 0.5) * 50,
+          Math.random() * 25 + 5,
+          (Math.random() - 0.5) * 50
+        );
+        const color = CONFIG.colors.fireworkColors[Math.floor(Math.random() * CONFIG.colors.fireworkColors.length)];
+        setFireworks(prev => [...prev, { id: nextId.current++, position, color }]);
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [active]);
+
+  const removeFirework = (id: number) => {
+    setFireworks(prev => prev.filter(f => f.id !== id));
+  };
+
+  return (
+    <>
+      {fireworks.map(fw => (
+        <Firework
+          key={fw.id}
+          position={fw.position}
+          color={fw.color}
+          onComplete={() => removeFirework(fw.id)}
+        />
+      ))}
+    </>
+  );
 };
 
 // --- Shader Material (Foliage) ---
@@ -385,7 +577,7 @@ const TopStar = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
 };
 
 // --- Main Scene Experience ---
-const Experience = ({ sceneState, rotationSpeed, customPhotos }: { sceneState: 'CHAOS' | 'FORMED', rotationSpeed: number, customPhotos?: string[] }) => {
+const Experience = ({ sceneState, rotationSpeed, customPhotos, victoryMode }: { sceneState: 'CHAOS' | 'FORMED', rotationSpeed: number, customPhotos?: string[], victoryMode?: boolean }) => {
   const controlsRef = useRef<any>(null);
   useFrame(() => {
     if (controlsRef.current) {
@@ -417,10 +609,14 @@ const Experience = ({ sceneState, rotationSpeed, customPhotos }: { sceneState: '
            <TopStar state={sceneState} />
         </Suspense>
         <Sparkles count={600} scale={50} size={8} speed={0.4} opacity={0.4} color={CONFIG.colors.silver} />
+        
+        {/* Victory 模式特效：雪花和烟花 */}
+        <Snowfall active={victoryMode || false} />
+        <FireworksManager active={victoryMode || false} />
       </group>
 
       <EffectComposer>
-        <Bloom luminanceThreshold={0.8} luminanceSmoothing={0.1} intensity={1.5} radius={0.5} mipmapBlur />
+        <Bloom luminanceThreshold={0.8} luminanceSmoothing={0.1} intensity={victoryMode ? 2.0 : 1.5} radius={0.5} mipmapBlur />
         <Vignette eskil={false} offset={0.1} darkness={1.2} />
       </EffectComposer>
     </>
@@ -489,6 +685,7 @@ const GestureController = ({ onGesture, onMove, onStatus, debugMode }: any) => {
               if (score > 0.4) {
                  if (name === "Open_Palm") onGesture("CHAOS"); 
                  if (name === "Closed_Fist") onGesture("FORMED");
+                 if (name === "Victory") onGesture("VICTORY");
                  if (debugMode) onStatus(`DETECTED: ${name}`);
               }
               
@@ -557,7 +754,23 @@ export default function GrandTreeApp() {
   const [debugMode, setDebugMode] = useState(false);
   const [userPhotos, setUserPhotos] = useState<string[]>([]);
   const [photoKey, setPhotoKey] = useState(0); // 用于强制重新渲染
+  const [victoryMode, setVictoryMode] = useState(false); // Victory 特效模式
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 处理手势变化
+  const handleGesture = (gesture: string) => {
+    if (gesture === "CHAOS") {
+      setSceneState("CHAOS");
+      setVictoryMode(false);
+    } else if (gesture === "FORMED") {
+      setSceneState("FORMED");
+      setVictoryMode(false);
+    } else if (gesture === "VICTORY") {
+      // Victory 手势：粒子散开 + 烟花 + 下雪
+      setSceneState("CHAOS");
+      setVictoryMode(true);
+    }
+  };
 
   // 处理用户上传照片
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -603,10 +816,10 @@ export default function GrandTreeApp() {
     <div style={{ width: '100vw', height: '100vh', backgroundColor: '#000', position: 'relative', overflow: 'hidden' }}>
       <div style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, zIndex: 1 }}>
         <Canvas dpr={[1, 2]} gl={{ toneMapping: THREE.ReinhardToneMapping }} shadows>
-            <Experience key={photoKey} sceneState={sceneState} rotationSpeed={rotationSpeed} customPhotos={currentPhotos} />
+            <Experience key={photoKey} sceneState={sceneState} rotationSpeed={rotationSpeed} customPhotos={currentPhotos} victoryMode={victoryMode} />
         </Canvas>
       </div>
-      <GestureController onGesture={setSceneState} onMove={setRotationSpeed} onStatus={setAiStatus} debugMode={debugMode} />
+      <GestureController onGesture={handleGesture} onMove={setRotationSpeed} onStatus={setAiStatus} debugMode={debugMode} />
 
       {/* UI - Stats */}
       <div style={{ position: 'absolute', bottom: '30px', left: '40px', color: '#888', zIndex: 10, fontFamily: 'sans-serif', userSelect: 'none' }}>
@@ -662,7 +875,10 @@ export default function GrandTreeApp() {
         <button onClick={() => setDebugMode(!debugMode)} style={{ padding: '12px 15px', backgroundColor: debugMode ? '#FFD700' : 'rgba(0,0,0,0.5)', border: '1px solid #FFD700', color: debugMode ? '#000' : '#FFD700', fontFamily: 'sans-serif', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', backdropFilter: 'blur(4px)' }}>
            {debugMode ? 'HIDE DEBUG' : '🛠 DEBUG'}
         </button>
-        <button onClick={() => setSceneState(s => s === 'CHAOS' ? 'FORMED' : 'CHAOS')} style={{ padding: '12px 30px', backgroundColor: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255, 215, 0, 0.5)', color: '#FFD700', fontFamily: 'serif', fontSize: '14px', fontWeight: 'bold', letterSpacing: '3px', textTransform: 'uppercase', cursor: 'pointer', backdropFilter: 'blur(4px)' }}>
+        <button onClick={() => { setSceneState('CHAOS'); setVictoryMode(true); }} style={{ padding: '12px 15px', backgroundColor: victoryMode ? '#FF69B4' : 'rgba(0,0,0,0.5)', border: '1px solid #FF69B4', color: victoryMode ? '#000' : '#FF69B4', fontFamily: 'sans-serif', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', backdropFilter: 'blur(4px)' }}>
+           {victoryMode ? '🎆 庆祝中...' : '✌️ 庆祝'}
+        </button>
+        <button onClick={() => { setSceneState(s => s === 'CHAOS' ? 'FORMED' : 'CHAOS'); setVictoryMode(false); }} style={{ padding: '12px 30px', backgroundColor: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255, 215, 0, 0.5)', color: '#FFD700', fontFamily: 'serif', fontSize: '14px', fontWeight: 'bold', letterSpacing: '3px', textTransform: 'uppercase', cursor: 'pointer', backdropFilter: 'blur(4px)' }}>
            {sceneState === 'CHAOS' ? 'Assemble Tree' : 'Disperse'}
         </button>
       </div>
